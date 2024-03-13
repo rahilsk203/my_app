@@ -1,4 +1,4 @@
 Flask==2.1.2
 Flask-Cors==4.0.0
 gunicorn==20.1.0
-PeakPxApi==4.12.3
+PeakPxApi

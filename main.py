@@ -62,7 +62,7 @@ class StandaloneApplication(BaseApplication):
         return self.application
 
 def run_flask_app():
-    subprocess.run(["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--preload", "--threads", "1", "your_script_name_here:app"])
+    subprocess.run(["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--preload", "--threads", "2", "main:app"])
 
 def schedule_reboot():
     while True:

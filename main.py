@@ -1,3 +1,6 @@
+import subprocess
+import time
+import sys
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PeakPxApi import PeakPx
@@ -58,14 +61,19 @@ class StandaloneApplication(BaseApplication):
     def load(self):
         return self.application
 
-if __name__ == '__main__':
-    # Gunicorn options
-    gunicorn_options = {
-        "bind": "0.0.0.0:5000",
-        "workers": 4,
-        "preload": True,
-        "threads": 2
-    }
-    
-    # Run the Flask app with Gunicorn
-    StandaloneApplication(app, gunicorn_options).run()
+def run_flask_app():
+    subprocess.run(["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--preload", "--threads", "1", "your_script_name_here:app"])
+
+def schedule_reboot():
+    while True:
+        time.sleep(3600)  # Sleep for 1 hour (3600 seconds)
+        subprocess.run(["reboot"])
+
+if __name__ == "__main__":
+    while True:
+        try:
+            run_flask_app()
+            schedule_reboot()
+        except Exception as e:
+            print("An error occurred:", str(e), file=sys.stderr)
+            continue

@@ -1,6 +1,9 @@
 import subprocess
 import time
 import sys
+import os
+import psutil
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PeakPxApi import PeakPx
@@ -62,6 +65,7 @@ class StandaloneApplication(BaseApplication):
         return self.application
 
 def run_flask_app():
+    subprocess.Popen(["playit"])  # Start playit with default settings
     subprocess.run(["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--preload", "--threads", "2", "main:app"])
 
 def schedule_reboot():
@@ -69,11 +73,21 @@ def schedule_reboot():
         time.sleep(3600)  # Sleep for 1 hour (3600 seconds)
         subprocess.run(["reboot"])
 
+def monitor_memory():
+    threshold = 90
+    memory_usage = psutil.virtual_memory().percent
+    return memory_usage > threshold
+
 if __name__ == "__main__":
     while True:
         try:
             run_flask_app()
-            schedule_reboot()
+            while True:
+                if monitor_memory():
+                    os.system("kill -SIGINT $(lsof -t -i:5000)")
+                    time.sleep(5)
+                    break
+                time.sleep(60)
         except Exception as e:
             print("An error occurred:", str(e), file=sys.stderr)
             continue

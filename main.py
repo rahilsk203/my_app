@@ -80,23 +80,12 @@ def monitor_memory():
     memory_usage = psutil.virtual_memory().percent
     return memory_usage > threshold
 
-def kill_flask_server():
-    try:
-        pid = None
-        for proc in psutil.process_iter():
-            if proc.name() == "gunicorn" and "--bind" in proc.cmdline() and "main:app" in proc.cmdline():
-                pid = proc.pid
-                break
-        if pid:
-            os.kill(pid, signal.SIGINT)
-    except Exception as e:
-        print("Error occurred while killing Flask server:", str(e), file=sys.stderr)
-
 def run_flask_in_thread():
-    thread = threading.Thread(target=run_flask_app)
-    thread.start()
-    time.sleep(7)  # Sleep for 7 seconds
-    kill_flask_server()  # Terminate the Flask server process
+    while True:
+        subprocess.Popen(["playit"])  # Start playit with default settings
+        time.sleep(14)  # Sleep for 7 seconds
+        keyboard.send('ctrl+c')  # Simulate Ctrl+C to exit the script
+        subprocess.run(["pkill", "python3"])  # Terminate all Python3 processes
 
 if __name__ == "__main__":
     while True:

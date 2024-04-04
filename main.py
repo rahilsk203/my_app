@@ -3,8 +3,6 @@ import time
 import sys
 import os
 import psutil
-import threading
-import keyboard
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -80,19 +78,16 @@ def monitor_memory():
     memory_usage = psutil.virtual_memory().percent
     return memory_usage > threshold
 
-def run_flask_in_thread():
-    while True:
-        subprocess.Popen(["playit"])  # Start playit with default settings
-        time.sleep(14)  # Sleep for 7 seconds
-        keyboard.send('ctrl+c')  # Simulate Ctrl+C to exit the script
-        subprocess.run(["pkill", "python3"])  # Terminate all Python3 processes
-
 if __name__ == "__main__":
     while True:
         try:
-            run_flask_in_thread()
-            time.sleep(1)  # Ensure the script has time to exit before restarting
-            subprocess.run(["python3", "main.py"])  # Start a new instance of the script
+            run_flask_app()
+            while True:
+                if monitor_memory():
+                    os.system("kill -SIGINT $(lsof -t -i:5000)")
+                    time.sleep(5)
+                    break
+                time.sleep(60)
         except Exception as e:
             print("An error occurred:", str(e), file=sys.stderr)
             continue

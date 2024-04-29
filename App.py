@@ -3,7 +3,6 @@ import time
 import csv
 import os
 import signal
-import sched  # Import the 'sched' module for scheduling tasks
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PeakPxApi import PeakPx
@@ -13,7 +12,6 @@ import uuid
 app = Flask(__name__)
 CORS(app)
 px = PeakPx()
-scheduler = sched.scheduler(time.time, time.sleep)  # Define the scheduler
 
 # Server key
 server_key = "wallartify2024new"
@@ -104,7 +102,7 @@ def view_logs():
         with open('ip_query_log.csv', 'r', newline='') as file:
             reader = csv.DictReader(file)
             for row in reader:
-                logs.append({'ID': row['ID'], 'IP Address': row['IP Address'], 'Query': row['Query'], 'Timestamp': row['Timestamp'], 'Response Success': row['Response Success']})
+                logs.append({'ID': row['ID'], 'IP Address': row['IP Address'], 'Query': row['Query'], 'Timestamp': row['Timestamp'], 'Response Success': row['Response Status']})
         return jsonify(logs), 200
     except Exception as e:
         print(f"Error in view_logs: {e}")
@@ -142,19 +140,10 @@ def run_flask_app():
     except Exception as e:
         print(f"Error running Flask app: {e}")
 
-def restart_script(sc):
-    print("Restarting script...")
-    subprocess.Popen(["python", "main.py"])  # Restart the script
-    print("Script restarted successfully!")
-    # Reschedule the restart
-    scheduler.enter(7200, 1, restart_script, (sc,))
-
 def signal_handler(sig, frame):
     print("Exiting...")
     exit(0)
 
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)  # Register signal handler for Ctrl+C
-    scheduler.enter(7200, 1, restart_script, (scheduler,))
     run_flask_app()
-    scheduler.run()

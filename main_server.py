@@ -6,7 +6,6 @@ import signal
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PeakPxApi import PeakPx
-from gunicorn.app.base import BaseApplication
 import uuid
 import joblib
 import numpy as np
@@ -43,7 +42,7 @@ def log_query(ip_address, query, response_success):
         with open('ip_query_log.csv', 'a', newline='') as file:
             writer = csv.writer(file)
             timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-            writer.writerow([unique_id, ip_address, query, timestamp, response_success])
+            writer.writerow([unique_id, ip_address, query.lower(), timestamp, response_success])
     except Exception as e:
         print(f"Error logging query: {e}")
 
@@ -80,7 +79,7 @@ def train_model(queries):
 # Partial query recommendation function
 def partial_query_recommendation(partial_query, queries, vectorizer, model, top_n=5):
     try:
-        partial_vec = vectorizer.transform([partial_query])
+        partial_vec = vectorizer.transform([partial_query.lower()])
         similarities = cosine_similarity(partial_vec, vectorizer.transform(queries)).flatten()
         sorted_indices = np.argsort(similarities)[::-1]
 
@@ -88,7 +87,7 @@ def partial_query_recommendation(partial_query, queries, vectorizer, model, top_
         seen = set()
         for idx in sorted_indices:
             # Check if the query starts with the input prefix
-            if queries[idx].startswith(partial_query) and queries[idx] not in seen:
+            if queries[idx].startswith(partial_query.lower()) and queries[idx] not in seen:
                 unique_recommendations.append(queries[idx])
                 seen.add(queries[idx])
             if len(unique_recommendations) == top_n:
@@ -97,7 +96,7 @@ def partial_query_recommendation(partial_query, queries, vectorizer, model, top_
         return unique_recommendations
     except Exception as e:
         print(f"Error in partial_query_recommendation: {e}")
-        return [] 
+        return []
 
 # Load data from CSV file for logging queries
 def load_data(filename):
@@ -105,7 +104,7 @@ def load_data(filename):
     with open(filename, 'r', newline='') as file:
         reader = csv.DictReader(file)
         for row in reader:
-            queries.append(row['Query'])
+            queries.append(row['Query'].lower())
     return queries
 
 # API endpoint to search wallpapers
@@ -153,8 +152,6 @@ def view_logs():
         return jsonify({'error': 'An unexpected error occurred'}), 500
 
 # API endpoint to get recommendations for partial queries
-# API endpoint to get recommendations for partial quer
-# API endpoint to get recommendations for partial queries
 @app.route('/recommendations', methods=['GET'])
 def get_recommendations():
     try:
@@ -175,11 +172,6 @@ def get_recommendations():
         print(f"Error in get_recommendations: {e}")
         return jsonify({'error': 'An unexpected error occurred'}), 500
 
-
-
-    def load(self):
-        return self.application
-
 def run_flask_app():
     try:
         setup_csv()  # Set up the CSV file when the server starts
@@ -191,7 +183,7 @@ def run_flask_app():
         time.sleep(2)
         print("Playit started successfully!")
         
-        app.run(debug=True)  # Run the Flask app
+        subprocess.run(["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--preload", "--threads", "2", "main:app"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # Hide Gunicorn logs
     except Exception as e:
         print(f"Error running Flask app: {e}")
 

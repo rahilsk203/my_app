@@ -13,6 +13,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
 from cachetools import TTLCache
+from collections import Counter
 
 app = Flask(__name__)
 CORS(app)
@@ -85,7 +86,7 @@ def train_model(queries):
     return vectorizer, kmeans
 
 # Partial query recommendation function
-def partial_query_recommendation(partial_query, queries, vectorizer, model, top_n=5):
+def partial_query_recommendation(partial_query, queries, query_counter, vectorizer, model, top_n=5):
     try:
         partial_vec = vectorizer.transform([partial_query.lower()])
         similarities = cosine_similarity(partial_vec, vectorizer.transform(queries)).flatten()
@@ -95,12 +96,15 @@ def partial_query_recommendation(partial_query, queries, vectorizer, model, top_
         seen = set()
         for idx in sorted_indices:
             if queries[idx].startswith(partial_query.lower()) and queries[idx] not in seen:
-                unique_recommendations.append(queries[idx])
+                unique_recommendations.append((queries[idx], query_counter[queries[idx]]))
                 seen.add(queries[idx])
             if len(unique_recommendations) == top_n:
                 break
 
-        return unique_recommendations
+        # Sort by frequency
+        unique_recommendations.sort(key=lambda x: (-x[1], x[0]))
+
+        return [recommendation for recommendation, _ in unique_recommendations]
     except Exception as e:
         print(f"Error in partial_query_recommendation: {e}")
         return []
@@ -166,11 +170,24 @@ def get_recommendations():
         return jsonify({'error': 'Partial query parameter (q) is required'}), 400
 
     queries = load_data('ip_query_log.csv')
+    query_counter = Counter(queries)
     vectorizer, model = train_model(queries)
-    recommendations = partial_query_recommendation(partial_query, queries, vectorizer, model)
+    recommendations = partial_query_recommendation(partial_query, queries, query_counter, vectorizer, model)
     recommendations_list = [{'recommend': recommendation} for recommendation in recommendations]
 
     return jsonify(recommendations_list), 200
+
+# API endpoint to get trending queries
+@app.route('/trending', methods=['GET'])
+def get_trending():
+    if not validate_key(request):
+        return jsonify({'error': 'Invalid client key'}), 401
+
+    queries = load_data('ip_query_log.csv')
+    trending_queries = Counter(queries).most_common(10)
+    trending_list = [{'query': query, 'count': count} for query, count in trending_queries]
+
+    return jsonify(trending_list), 200
 
 def run_flask_app():
     setup_csv()
@@ -195,3 +212,4 @@ def signal_handler(sig, frame):
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     run_flask_app()
+        

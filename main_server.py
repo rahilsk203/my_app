@@ -14,6 +14,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
 from cachetools import TTLCache
 from collections import Counter
+from better_profanity import profanity
 
 app = Flask(__name__)
 CORS(app)
@@ -121,6 +122,10 @@ def load_data(filename):
         print(f"Error loading data: {e}")
     return queries
 
+# Function to check if a query is inappropriate using better_profanity
+def is_inappropriate(query):
+    return profanity.contains_profanity(query)
+
 # API endpoint to search wallpapers
 @app.route('/search_wallpapers', methods=['GET'])
 def search_wallpapers_route():
@@ -131,6 +136,10 @@ def search_wallpapers_route():
     if not query:
         return jsonify({'error': 'Query parameter is required'}), 400
 
+    # Check if the query is inappropriate
+    if is_inappropriate(query):
+        return jsonify([{'Image': 'https://i.pinimg.com/736x/95/55/07/9555074fb5a23ba2f2513597a95827a1.jpg'}]), 400
+
     client_ip = request.remote_addr
     image_urls, success = search_wallpapers(query)
     with open('ip_query_log.csv', 'a', newline='') as file:
@@ -140,7 +149,7 @@ def search_wallpapers_route():
         response_data = [{'Image': url} for url in image_urls]
         return jsonify(response_data), 200
     else:
-        return jsonify({'error': 'No wallpapers found for the given query'}), 404
+        return jsonify([{'recommend': 'No wallpapers found for the given query'}]), 404
 
 # API endpoint to view logs
 @app.route('/view_logs', methods=['GET'])
@@ -169,11 +178,15 @@ def get_recommendations():
     if not partial_query:
         return jsonify({'error': 'Partial query parameter (q) is required'}), 400
 
+    # Check if the partial query is inappropriate
+    if is_inappropriate(partial_query):
+        return jsonify([{'recommend': 'Inappropriate query'}]), 400
+
     queries = load_data('ip_query_log.csv')
     query_counter = Counter(queries)
     vectorizer, model = train_model(queries)
     recommendations = partial_query_recommendation(partial_query, queries, query_counter, vectorizer, model)
-    recommendations_list = [{'recommend': recommendation} for recommendation in recommendations]
+    recommendations_list = [{'recommend': recommendation} for recommendation in recommendations if not is_inappropriate(recommendation)]
 
     return jsonify(recommendations_list), 200
 
@@ -185,7 +198,7 @@ def get_trending():
 
     queries = load_data('ip_query_log.csv')
     trending_queries = Counter(queries).most_common(10)
-    trending_list = [{'query': query, 'count': count} for query, count in trending_queries]
+    trending_list = [{'query': query, 'count': count} for query, count in trending_queries if not is_inappropriate(query)]
 
     return jsonify(trending_list), 200
 
@@ -210,6 +223,6 @@ def signal_handler(sig, frame):
     exit(0)
 
 if __name__ == "__main__":
+    profanity.load_censor_words()
     signal.signal(signal.SIGINT, signal_handler)
     run_flask_app()
-        

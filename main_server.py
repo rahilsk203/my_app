@@ -3,6 +3,8 @@ import time
 import csv
 import os
 import signal
+import threading
+import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PeakPxApi import PeakPx
@@ -15,6 +17,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from cachetools import TTLCache
 from collections import Counter
 from better_profanity import profanity
+import psutil
+import traceback
 
 app = Flask(__name__)
 CORS(app)
@@ -22,6 +26,9 @@ px = PeakPx()
 
 # Server key
 server_key = "wallartify2024new"
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s')
 
 # Setup CSV file for logging queries
 def setup_csv():
@@ -32,7 +39,7 @@ def setup_csv():
                 writer = csv.writer(file)
                 writer.writerow(["ID", "IP Address", "Query", "Timestamp", "Response Status"])
         except Exception as e:
-            print(f"Error setting up CSV file: {e}")
+            logging.error(f"Error setting up CSV file: {e}")
 
 # Dictionary to store client IPs and their corresponding IDs
 client_ids = {}
@@ -40,14 +47,15 @@ client_ids = {}
 # Log query to CSV
 def log_query(ip_address, query, response_success, file):
     try:
-        if ip_address not in client_ids:
-            client_ids[ip_address] = str(uuid.uuid4())
-        unique_id = client_ids[ip_address]
+        if (client_id := client_ids.get(ip_address)) is None:
+            client_id = str(uuid.uuid4())
+            client_ids[ip_address] = client_id
+        unique_id = client_id
         writer = csv.writer(file)
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         writer.writerow([unique_id, ip_address, query.lower(), timestamp, response_success])
     except Exception as e:
-        print(f"Error logging query: {e}")
+        logging.error(f"Error logging query: {e}")
 
 # Validate client key
 def validate_key(request):
@@ -55,7 +63,7 @@ def validate_key(request):
         client_sent_key = request.args.get('key')
         return client_sent_key == server_key
     except Exception as e:
-        print(f"Error validating client key: {e}")
+        logging.error(f"Error validating client key: {e}")
         return False
 
 # Caching results of the search for 5 minutes
@@ -75,7 +83,7 @@ def search_wallpapers(query):
         else:
             return [], False
     except Exception as e:
-        print(f"Error searching wallpapers: {e}")
+        logging.error(f"Error searching wallpapers: {e}")
         return [], False
 
 # Train model for recommendation system
@@ -87,7 +95,7 @@ def train_model(queries):
     return vectorizer, kmeans
 
 # Partial query recommendation function
-def partial_query_recommendation(partial_query, queries, query_counter, vectorizer, model, top_n=5):
+def partial_query_recommendation(partial_query, queries, query_counter, vectorizer, model, top_n=5, min_frequency=5):
     try:
         partial_vec = vectorizer.transform([partial_query.lower()])
         similarities = cosine_similarity(partial_vec, vectorizer.transform(queries)).flatten()
@@ -96,7 +104,7 @@ def partial_query_recommendation(partial_query, queries, query_counter, vectoriz
         unique_recommendations = []
         seen = set()
         for idx in sorted_indices:
-            if queries[idx].startswith(partial_query.lower()) and queries[idx] not in seen:
+            if queries[idx].startswith(partial_query.lower()) and query_counter[queries[idx]] >= min_frequency and queries[idx] not in seen:
                 unique_recommendations.append((queries[idx], query_counter[queries[idx]]))
                 seen.add(queries[idx])
             if len(unique_recommendations) == top_n:
@@ -107,7 +115,7 @@ def partial_query_recommendation(partial_query, queries, query_counter, vectoriz
 
         return [recommendation for recommendation, _ in unique_recommendations]
     except Exception as e:
-        print(f"Error in partial_query_recommendation: {e}")
+        logging.error(f"Error in partial_query_recommendation: {e}")
         return []
 
 # Load data from CSV file for logging queries
@@ -119,7 +127,7 @@ def load_data(filename):
             for row in reader:
                 queries.append(row['Query'].lower())
     except Exception as e:
-        print(f"Error loading data: {e}")
+        logging.error(f"Error loading data: {e}")
     return queries
 
 # Function to check if a query is inappropriate using better_profanity
@@ -138,7 +146,7 @@ def search_wallpapers_route():
 
     # Check if the query is inappropriate
     if is_inappropriate(query):
-        return jsonify([{'Image': 'https://i.pinimg.com/736x/95/55/07/9555074fb5a23ba2f2513597a95827a1.jpg'}]), 400
+        return jsonify([{'Image': 'https://i.pinimg.com/736x/95/55/07-9555074fb5a23ba2f2513597a95827a1.jpg'}]), 400
 
     client_ip = request.remote_addr
     image_urls, success = search_wallpapers(query)
@@ -164,6 +172,7 @@ def view_logs():
             for row in reader:
                 logs.append({'ID': row['ID'], 'IP Address': row['IP Address'], 'Query': row['Query'], 'Timestamp': row['Timestamp'], 'Response Success': row['Response Status']})
     except Exception as e:
+        logging.error(f"An unexpected error occurred while reading logs: {e}")
         return jsonify({'error': 'An unexpected error occurred'}), 500
 
     return jsonify(logs), 200
@@ -202,24 +211,79 @@ def get_trending():
 
     return jsonify(trending_list), 200
 
+# Monitoring endpoint
+last_failure_time = None
+last_failure_reason = None
+
+@app.route('/monitoring', methods=['GET'])
+def monitoring():
+    global last_failure_time, last_failure_reason
+    try:
+        # Check if the playit subprocess is running
+        playit_running = is_process_running("playit")
+
+        # Get server CPU and memory usage
+        cpu_percent = psutil.cpu_percent()
+        memory_percent = psutil.virtual_memory().percent
+
+        # Reset last failure reason
+        last_failure_reason = None
+
+        # Return the monitoring information as JSON
+        return jsonify({
+            'playit_status': 'running' if playit_running else 'not running',
+            'cpu_percent': cpu_percent,
+            'memory_percent': memory_percent,
+            'last_failure_time': str(last_failure_time) if last_failure_time else None,
+            'last_failure_reason': last_failure_reason
+        }), 200
+    except Exception as e:
+        last_failure_time = time.strftime('%Y-%m-%d %H:%M:%S')
+        last_failure_reason = str(e)
+        logging.error(f"Error in monitoring: {e}")
+        traceback.print_exc()  # Print exception traceback
+        return jsonify({'error': 'An unexpected error occurred'}), 500
+
+def is_process_running(process_name):
+    """
+    Check if there is any running process that contains the given name process_name.
+    """
+    for proc in psutil.process_iter(['pid', 'name']):
+        if process_name.lower() in proc.info['name'].lower():
+            return True
+    return False
+
+def monitor_playit():
+    global last_failure_time, last_failure_reason
+    while True:
+        playit_proc = None
+        try:
+            playit_proc = subprocess.Popen(["playit"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            while playit_proc.poll() is None:
+                time.sleep(5)
+        except Exception as e:
+            last_failure_time = time.strftime('%Y-%m-%d %H:%M:%S')
+            last_failure_reason = str(e)
+            logging.error(f"Error running Playit: {e}")
+        finally:
+            if playit_proc:
+                playit_proc.kill()
+        logging.info("Restarting Playit...")
+        time.sleep(5)
+
 def run_flask_app():
     setup_csv()
 
     try:
-        print("Starting server...")
-        time.sleep(1)
-        print("Server started successfully!")
-
-        playit_proc = subprocess.Popen(["playit"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(2)
-        print("Playit started successfully!")
-
-        subprocess.run(["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--threads", "2", "main:app"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        logging.info("Starting server...")
+        threading.Thread(target=monitor_playit, daemon=True).start()
+        subprocess.run(["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--threads", "2", "main:app"], check=True)
     except Exception as e:
-        print(f"Error running Flask app: {e}")
+        logging.error(f"Error running Flask app: {e}")
+        traceback.print_exc()  # Print exception traceback
 
 def signal_handler(sig, frame):
-    print("Exiting...")
+    logging.info("Exiting...")
     exit(0)
 
 if __name__ == "__main__":

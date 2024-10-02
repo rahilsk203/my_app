@@ -1,26 +1,25 @@
-import subprocess
 import time
 import csv
 import os
 import signal
-import threading
 import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from PeakPxApi import PeakPx
 import uuid
-import joblib
+from cachetools import TTLCache
+from collections import Counter
+from better_profanity import profanity
+import firebase_admin
+from firebase_admin import credentials, db
+import traceback
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
-from cachetools import TTLCache
-from collections import Counter
-from better_profanity import profanity
+import subprocess
 
 app = Flask(__name__)
 CORS(app)
-px = PeakPx()
 
 # Server key
 server_key = "wallartify2024new"
@@ -45,9 +44,10 @@ client_ids = {}
 # Log query to CSV
 def log_query(ip_address, query, response_success, file):
     try:
-        if ip_address not in client_ids:
-            client_ids[ip_address] = str(uuid.uuid4())
-        unique_id = client_ids[ip_address]
+        if (client_id := client_ids.get(ip_address)) is None:
+            client_id = str(uuid.uuid4())
+            client_ids[ip_address] = client_id
+        unique_id = client_id
         writer = csv.writer(file)
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         writer.writerow([unique_id, ip_address, query.lower(), timestamp, response_success])
@@ -63,33 +63,48 @@ def validate_key(request):
         logging.error(f"Error validating client key: {e}")
         return False
 
+# Initialize Firebase Admin SDK
+cred = credentials.Certificate("wallpaper-6790d-firebase-adminsdk-o5vzu-143594ce31.json")
+firebase_admin.initialize_app(cred, {
+    'databaseURL': 'https://wallpaper-6790d-default-rtdb.firebaseio.com/'
+})
+
 # Caching results of the search for 5 minutes
 cache = TTLCache(maxsize=100, ttl=300)
 
-# Search wallpapers using PeakPx API
+# Search wallpapers using Firebase Realtime Database (in 'alldata' node)
 def search_wallpapers(query):
-    if query in cache:
-        return cache[query], True
-
+    ref = db.reference('/alldata')  # Reference to 'alldata' node
     try:
-        wallpapers = px.search_wallpapers(query=query)
-        if wallpapers:
-            image_urls = [wallpaper['url'] for wallpaper in wallpapers]
-            cache[query] = image_urls
-            return image_urls, True
+        wallpapers = ref.order_by_key().get()  # Fetch all data from the 'alldata' node
+        matched_images = []
+
+        # Loop through Firebase data and find matches in the 'titles' array
+        for key, data in wallpapers.items():
+            titles = ' '.join(data['titles']).lower()  # Join titles array into a single string
+            if query.lower() in titles:
+                matched_images.append(data['img'])  # Add the image URL to the results
+
+        if matched_images:
+            cache[query] = matched_images  # Cache the result
+            return matched_images, True
         else:
             return [], False
     except Exception as e:
-        logging.error(f"Error searching wallpapers: {e}")
+        logging.error(f"Error fetching images from Firebase: {e}")
         return [], False
 
 # Train model for recommendation system
 def train_model(queries):
-    vectorizer = TfidfVectorizer(stop_words='english')
-    X = vectorizer.fit_transform(queries)
-    kmeans = KMeans(n_clusters=5, random_state=0)
-    kmeans.fit(X)
-    return vectorizer, kmeans
+    try:
+        vectorizer = TfidfVectorizer(stop_words='english')
+        X = vectorizer.fit_transform(queries)
+        kmeans = KMeans(n_clusters=5, random_state=0)
+        kmeans.fit(X)
+        return vectorizer, kmeans
+    except Exception as e:
+        logging.error(f"Error training model: {e}")
+        return None, None
 
 # Partial query recommendation function
 def partial_query_recommendation(partial_query, queries, query_counter, vectorizer, model, top_n=5, min_frequency=5):
@@ -143,7 +158,7 @@ def search_wallpapers_route():
 
     # Check if the query is inappropriate
     if is_inappropriate(query):
-        return jsonify([{'Image': 'https://i.pinimg.com/736x/95/55/07        -9555074fb5a23ba2f2513597a95827a1.jpg'}]), 400
+        return jsonify([{'Image': 'https://i.pinimg.com/736x/95/55/07-9555074fb5a23ba2f2513597a95827a1.jpg'}]), 400
 
     client_ip = request.remote_addr
     image_urls, success = search_wallpapers(query)
@@ -190,7 +205,12 @@ def get_recommendations():
 
     queries = load_data('ip_query_log.csv')
     query_counter = Counter(queries)
+
+    # Train the model using the queries
     vectorizer, model = train_model(queries)
+    if vectorizer is None or model is None:
+        return jsonify({'error': 'Model training failed'}), 500
+
     recommendations = partial_query_recommendation(partial_query, queries, query_counter, vectorizer, model)
     recommendations_list = [{'recommend': recommendation} for recommendation in recommendations if not is_inappropriate(recommendation)]
 
@@ -208,30 +228,13 @@ def get_trending():
 
     return jsonify(trending_list), 200
 
-def monitor_playit():
-    while True:
-        playit_proc = None
-        try:
-            playit_proc = subprocess.Popen(["playit"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            while playit_proc.poll() is None:
-                time.sleep(5)
-        except Exception as e:
-            logging.error(f"Error running Playit: {e}")
-        finally:
-            if playit_proc:
-                playit_proc.kill()
-        logging.info("Restarting Playit...")
-        time.sleep(5)
-
+# Function to start the Flask app with Gunicorn
 def run_flask_app():
     setup_csv()
 
     try:
-        logging.info("Starting server...")
-        threading.Thread(target=monitor_playit, daemon=True).start()
-        subprocess.run(["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--threads", "2", "main:app"], check=True)
-    except Exception as e:
-        logging.error(f"Error running Flask app: {e}")
+        logging.error(f"Error running Gunicorn: {e}")
+        traceback.print_exc()  # Print exception traceback
 
 def signal_handler(sig, frame):
     logging.info("Exiting...")
@@ -240,5 +243,13 @@ def signal_handler(sig, frame):
 if __name__ == "__main__":
     profanity.load_censor_words()
     signal.signal(signal.SIGINT, signal_handler)
-    run_flask_app()
-        
+
+    # Setup the CSV file and logging
+    setup_csv()
+
+    try:
+        logging.info("Starting Gunicorn server...")
+        subprocess.run(["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--threads", "2", "main:app"], check=True)
+    except Exception as e:
+        logging.error(f"Error running Gunicorn: {e}")
+        traceback.print_exc()  # Print exception traceback
